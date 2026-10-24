@@ -1,0 +1,318 @@
+manifest_version: "1.0"
+manifest_id: "voltagent-real-equipment-calibration"
+project: "VoltAgent"
+purpose: "Collect verified equipment specifications for calibration and safety review. This is an intake manifest, not an operating configuration or test authorization."
+
+status:
+  phase: research_only
+  hardware_selected: false
+  calibration_authorized: false
+  hardware_test_authorized: false
+  rule: "Unknown values remain null until supported by manufacturer documentation or verified measurements. Never infer safety limits from a similar model."
+
+evidence_policy:
+  accepted_sources:
+    - "Official manufacturer datasheet/manual with exact model and revision"
+    - "Official communications protocol/register map"
+    - "Qualified technician's signed test report"
+    - "Calibrated instrument measurement with method, date, and uncertainty"
+  every_value_requires:
+    - value
+    - unit
+    - source_document_or_measurement_id
+    - revision_or_date
+    - page_section_or_register
+    - verification_status: "unverified | document_verified | measurement_verified"
+    - notes
+  reject:
+    - "Unlabelled values or screenshots"
+    - "Simulation outputs presented as field measurements"
+    - "Limits guessed from another product/model"
+
+site:
+  country_and_regulatory_context: null
+  ambient_temperature_min_c: null
+  ambient_temperature_max_c: null
+  altitude_m: null
+  ventilation_and_enclosure: null
+  single_line_diagram_file: null
+
+equipment:
+  generator:
+    selected: false
+    manufacturer: null
+    exact_model: null
+    serial_or_asset_id: null
+    generator_type: null
+    rated_active_power_kw: null
+    rated_apparent_power_kva: null
+    rated_power_factor: null
+    rated_voltage_v: null
+    phase_count: null
+    rated_frequency_hz: null
+    rated_speed_rpm: null
+    pole_count: null
+    engine_fuel_type: null
+    governor_type_and_model: null
+    alternator_model: null
+    frequency_response_or_droop_data_file: null
+    limits:
+      continuous_current_a: null
+      overload_rating_and_duration: null
+      permitted_frequency_range_hz: null
+      permitted_voltage_range_v: null
+      manufacturer_protection_settings_file: null
+    documents: []
+
+  inverter_charger:
+    selected: false
+    manufacturer: null
+    exact_model: null
+    hardware_revision: null
+    firmware_version: null
+    ac_input:
+      nominal_voltage_v: null
+      phase_count: null
+      nominal_frequency_hz: null
+      permitted_voltage_range_v: null
+      permitted_frequency_range_hz: null
+      maximum_input_current_a: null
+      maximum_input_power_kva: null
+      power_factor_or_input_characteristics: null
+    ac_output:
+      nominal_voltage_v: null
+      phase_count: null
+      nominal_frequency_hz: null
+      continuous_power_kw: null
+      continuous_power_kva: null
+      surge_power_and_duration: null
+    battery_dc_port:
+      nominal_voltage_v: null
+      permitted_voltage_range_v: null
+      maximum_charge_current_a: null
+      maximum_discharge_current_a: null
+      charge_power_limit_kw: null
+      efficiency_data_file: null
+    charge_control:
+      supported_modes: []
+      current_command_supported: null
+      command_resolution_a: null
+      minimum_command_interval_ms: null
+      ramp_rate_limits_a_per_s: null
+      behavior_on_communications_loss: null
+    communications:
+      interfaces: []
+      protocol: null
+      official_register_map_or_api_file: null
+      telemetry_read_supported: null
+      writable_commands_and_limits_documented: null
+      authentication_or_write_enable_requirements: null
+    protection_documentation_file: null
+    documents: []
+
+  battery:
+    selected: false
+    manufacturer: null
+    exact_model: null
+    chemistry: null
+    series_parallel_configuration: null
+    nominal_voltage_v: null
+    minimum_voltage_v: null
+    maximum_voltage_v: null
+    rated_capacity_ah: null
+    rated_energy_kwh: null
+    recommended_charge_current_a: null
+    maximum_continuous_charge_current_a: null
+    charge_current_vs_temperature_data_file: null
+    recommended_discharge_current_a: null
+    maximum_continuous_discharge_current_a: null
+    charge_temperature_range_c: null
+    discharge_temperature_range_c: null
+    storage_temperature_range_c: null
+    permitted_soc_range_percent: null
+    manufacturer_charge_profile_file: null
+    thermal_or_internal_resistance_data_file: null
+    documents: []
+
+  battery_management_system:
+    selected: false
+    manufacturer: null
+    exact_model: null
+    firmware_version: null
+    cell_configuration: null
+    telemetry_available:
+      pack_voltage: null
+      pack_current: null
+      soc: null
+      soh: null
+      cell_voltages: null
+      cell_temperatures: null
+      charge_discharge_limits: null
+      alarms_and_faults: null
+    charge_limit_authority: null
+    contactor_disconnect_behavior: null
+    interface_and_protocol: null
+    official_protocol_document: null
+    update_rate_ms: null
+    timeout_behavior: null
+    protection_limits_file: null
+    documents: []
+
+sensors_and_data_acquisition:
+  ac_meter:
+    selected: false
+    manufacturer_model: null
+    voltage_range_accuracy: null
+    current_range_accuracy: null
+    frequency_range_accuracy: null
+    power_measurement_capabilities: null
+    sample_rate_hz: null
+    latency_ms: null
+    calibration_certificate_or_date: null
+    installation_location: null
+  dc_current_sensor:
+    selected: false
+    manufacturer_model: null
+    range_a: null
+    accuracy: null
+    response_time_or_bandwidth: null
+    isolation_rating: null
+    calibration_certificate_or_date: null
+  temperature_sensors:
+    selected: false
+    manufacturer_model_and_type: null
+    sensor_locations: []
+    range_c: null
+    accuracy_c: null
+    response_time_s: null
+    calibration_certificate_or_date: null
+  acquisition:
+    device_and_firmware: null
+    timestamp_and_clock_alignment_method: null
+    sample_rates_by_signal: {}
+    timestamp_resolution_ms: null
+    missing_data_detection: null
+    export_format: null
+
+controller_and_protection:
+  controller_hardware: null
+  os_or_firmware: null
+  application_version: null
+  inference_runtime_version: null
+  command_path_to_inverter: null
+  command_acknowledgement_available: null
+  watchdog: null
+  independent_hardwired_interlocks: null
+  manual_override_and_isolation: null
+  emergency_stop: null
+  safe_state_on_controller_failure: null
+  safe_state_on_sensor_failure: null
+  safe_state_on_communications_loss: null
+  single_line_diagram_file: null
+  breaker_fuse_ratings_and_curves_file: null
+  conductor_and_insulation_specs_file: null
+  earthing_bonding_neutral_details: null
+  qualified_installation_review: null
+
+calibration_data:
+  field_data_available: false
+  data_files: []
+  source_classification: "simulation | manufacturer_data | field_measurement"
+  required_signals:
+    timestamp: "ISO 8601 with timezone"
+    generator_frequency: "Hz"
+    generator_voltage: "V; phase reference stated"
+    generator_current: "A; phase and RMS convention stated"
+    generator_active_power: "kW"
+    generator_apparent_power: "kVA"
+    power_factor: "dimensionless"
+    inverter_ac_input_power: "kW"
+    battery_dc_voltage: "V"
+    battery_current: "A; sign convention stated"
+    battery_temperature: "degC; sensor location stated"
+    battery_soc: "%; source and accuracy stated"
+    charge_command: "A or documented native unit"
+    command_acknowledgement: "status/value if supported"
+    alarms_and_events: "coded event and timestamp"
+  required_metadata:
+    - "Exact equipment model and firmware"
+    - "Sensor make/model, accuracy, calibration status, and location"
+    - "Sampling rates and time alignment"
+    - "Operating mode, initial conditions, and load-change timestamps"
+    - "Missing samples, clipping, exclusions, and known limitations"
+  data_quality_checks:
+    - "Verify units and sign conventions"
+    - "Check monotonic timestamps and signal alignment"
+    - "Flag missing, duplicated, clipped, and implausible readings"
+    - "Keep simulation and field data explicitly labelled and separate"
+    - "Separate training, validation, and test experiments"
+
+calibration_plan:
+  generator:
+    identify: ["rated operating point", "frequency response to load steps", "governor response/droop where applicable", "delays"]
+    status: blocked_pending_verified_data
+  inverter:
+    identify: ["conversion efficiency", "command scaling/resolution/delay/ramp", "input acceptance and trip behavior"]
+    status: blocked_pending_verified_data
+  battery:
+    identify: ["charge limits versus SOC and temperature", "electrical and thermal parameters", "BMS limit/alarm behavior"]
+    status: blocked_pending_verified_data
+  uncertainty_analysis_required: true
+  rule: "Document parameter ranges and sensitivity. Do not label an uncalibrated parameter as a measured equipment property."
+
+safety_review:
+  limits_must_come_from: "Exact manufacturer documentation or qualified engineering approval"
+  required_before_hardware_test:
+    - "Generator voltage/frequency envelope and overload limits"
+    - "Inverter AC acceptance envelope, command limits, and trip behavior"
+    - "Battery/BMS current, voltage, SOC, and temperature limits"
+    - "Command magnitude, ramp-rate, and update-rate limits"
+    - "Sensor validity, stale-data, and plausibility limits"
+    - "Communications timeout and reviewed safe fallback"
+    - "Applicable independent electrical and thermal protections"
+    - "Manual override, isolation, emergency stop, and recovery procedure"
+  ai_authority:
+    allowed_before_validation: "simulation_only"
+    direct_hardware_commands_allowed: false
+    may_override_bms_or_inverter_protection: false
+    independent_deterministic_safety_supervisor_required: true
+  fallback_rule: "Do not invent a universal fallback command. Define it for the exact equipment after hazard review."
+
+verification_gates:
+  - id: G0
+    name: equipment_identity_and_documents
+    pass_criteria: "Exact models and current official documents recorded"
+    status: blocked
+  - id: G1
+    name: measurement_and_data_quality
+    pass_criteria: "Measurement chain, units, timing, uncertainty, and provenance reviewed"
+    status: blocked
+  - id: G2
+    name: model_calibration
+    pass_criteria: "Parameters identified; residuals, uncertainty, and validity range documented"
+    status: blocked
+  - id: G3
+    name: offline_simulation_validation
+    pass_criteria: "Predefined scenarios pass limits and comparison against baseline controller completed"
+    status: not_started
+  - id: G4
+    name: safety_and_hazard_review
+    pass_criteria: "Limits, failure modes, interlocks, fallback, and recovery approved by qualified reviewer"
+    status: blocked
+  - id: G5
+    name: hardware_in_the_loop
+    pass_criteria: "Test plan, instrumentation, stop conditions, and results reviewed"
+    status: not_started
+  - id: G6
+    name: controlled_field_test
+    pass_criteria: "Separate written authorization after prior gates and applicable regulatory review"
+    status: not_authorized
+
+signoff:
+  data_collector: null
+  electrical_engineer_reviewer: null
+  controls_engineer_reviewer: null
+  battery_bms_reviewer: null
+  approval_date: null
+  unresolved_risks: []
+  note: "Completing this manifest does not authorize testing. A separately reviewed test plan and explicit approval are required."

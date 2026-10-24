@@ -84,3 +84,96 @@ def test_simulation_logger_explicitly_labels_source(tmp_path):
     assert rows[0]["run_id"] == "unit-test-run"
     assert list(rows[0].keys()) == FIELDS
     env.close()
+
+
+def test_emergency_charge_shed_is_exposed_at_top_level_info():
+    env = GeneratorInverterEnv()
+    try:
+        env.reset(seed=7, options={
+            "frequency_hz": 50.0,
+            "charge_current_a": 5.0,
+            "target_charge_current_a": 5.0,
+            "battery_temp_c": 25.0,
+            "house_load_kw": 0.5,
+        })
+
+        _, _, _, _, info = env.step(
+            np.array([0.0], dtype=np.float32)
+        )
+
+        assert "emergency_charge_shed" in info
+        assert isinstance(info["emergency_charge_shed"], bool)
+        assert "emergency_charge_shed" not in info["reward_components"]
+    finally:
+        env.close()
+
+def test_emergency_overload_guard_sheds_charging_load():
+    config = SimulationConfig(
+        generator_rated_power_kw=4.0,
+        dc_charge_voltage_v=50.0,
+        inverter_efficiency=0.9,
+        guard_loads_a_downward_step=True,
+    )
+    env = GeneratorInverterEnv(config=config)
+
+    try:
+        env.reset(
+            seed=11,
+            options={
+                "frequency_hz": 50.0,
+                "charge_current_a": 20.0,
+                "target_charge_current_a": 20.0,
+                "battery_temp_c": 25.0,
+                "house_load_kw": 3.5,
+            },
+        )
+
+        _, _, _, _, info = env.step(
+            np.array([0.0], dtype=np.float32)
+        )
+
+        assert info["emergency_charge_shed"] is True
+        assert env.charge_current_a == 0.0
+        assert info["guard_active"] is True
+
+    finally:
+        env.close()       
+
+def test_battery_heating_scales_with_squared_current():
+    config = SimulationConfig(
+        generator_rated_power_kw=4.0,
+        battery_internal_resistance_ohm=0.02,
+        battery_thermal_capacity_j_per_c=2000.0,
+        battery_cooling_w_per_c=4.0,
+        ambient_temp_c=25.0,
+    )
+
+    def run_one_step(current_a):
+        env = GeneratorInverterEnv(config=config)
+
+        try:
+            env.reset(
+                seed=17,
+                options={
+                    "frequency_hz": 50.0,
+                    "charge_current_a": current_a,
+                    "target_charge_current_a": current_a,
+                    "battery_temp_c": 25.0,
+                    "house_load_kw": 0.5,
+                },
+            )
+
+            env.step(np.array([0.0], dtype=np.float32))
+
+            assert env.charge_current_a == current_a
+            return env.battery_temp_c - 25.0
+
+        finally:
+            env.close()
+
+    rise_at_20a = run_one_step(20.0)
+    rise_at_40a = run_one_step(40.0)
+
+    assert np.isclose(rise_at_20a, 0.0008, atol=1e-9)
+    assert np.isclose(rise_at_40a, 0.0032, atol=1e-9)
+    assert np.isclose(rise_at_40a / rise_at_20a, 4.0)

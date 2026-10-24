@@ -231,7 +231,22 @@ class GeneratorInverterEnv(gym.Env):
 
         total_load_kw = self._electrical_load_kw()
         overload_kw = max(0.0, total_load_kw - cfg.generator_rated_power_kw)
+                # Research-only overload override:
+        # shed simulated charging load when total demand exceeds rating.
+        emergency_charge_shed = False
 
+        if cfg.guard_loads_a_downward_step and overload_kw > 1e-9:
+            self.charge_current_a = 0.0
+            applied_delta = self.charge_current_a - previous_current
+
+            total_load_kw = self._electrical_load_kw()
+            overload_kw = max(
+                0.0,
+                total_load_kw - cfg.generator_rated_power_kw,
+            )
+
+            guard_active = True
+            emergency_charge_shed = True
         # First-order governor response with a simple droop law.
         governor_gain_kw_per_hz = cfg.generator_rated_power_kw / cfg.droop_hz_at_rated_power
         governor_target_kw = self.mechanical_power_setpoint_kw + governor_gain_kw_per_hz * (
@@ -290,6 +305,7 @@ class GeneratorInverterEnv(gym.Env):
             "total_load_kw": total_load_kw,
             "overload_kw": overload_kw,
             "mechanical_power_kw": self.mechanical_power_kw,
+            "emergency_charge_shed": emergency_charge_shed,
             "reward_components": {
                 "frequency_penalty": frequency_penalty,
                 "target_penalty": target_penalty,
