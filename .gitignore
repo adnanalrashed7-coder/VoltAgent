@@ -1,15 +1,21 @@
-# Virtual Environment
+# Virtual environments
+.venv/
 venv/
 env/
 ENV/
 
-# Python cache
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
-# VS Code settings
+# Editors
 .vscode/
 
-# Logs & temp files
+# Generated runtime artifacts
 *.log
+reports/
+data/simulation_inference.csv
+
+# Virtualenvs and caches

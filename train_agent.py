@@ -1,172 +1,162 @@
-import os
-import csv
-import gymnasium as gym
-from gymnasium import spaces
+"""Train a new VoltAgent research model using synthetic simulation only.
+
+This script intentionally does NOT fine-tune from CSV logs. In particular, it
+will never treat previously logged simulation transitions as real-world data.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.env_checker import check_env
 
-# ==============================================================================
-# 1. بيئة المحاكاة الأساسية (التدريب الأولي - Baseline)
-# ==============================================================================
-class GeneratorInverterEnv(gym.Env):
-    metadata = {"render_modes": ["human"]}
-
-    def __init__(self):
-        super().__init__()
-
-        # التغيير المطلوب في تيار الشحن [-5A, +5A]
-        self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(1,), dtype=np.float32)
-
-        # الملاحظات: [التردد, معدل تغير التردد, تيار الشحن, حرارة البطارية, حمل المنزل]
-        self.observation_space = spaces.Box(
-            low=np.array([40.0, -10.0, 0.0, 20.0, 0.0], dtype=np.float32),
-            high=np.array([60.0, 10.0, 60.0, 70.0, 5.0], dtype=np.float32),
-            dtype=np.float32
-        )
-
-        self.dt = 0.2
-        self.reset()
-
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        self.freq = 50.0
-        self.df_dt = 0.0
-        self.charge_current = 5.0
-        self.battery_temp = 25.0
-        self.house_load = 0.5
-        self.step_count = 0
-
-        obs = np.array([self.freq, self.df_dt, self.charge_current, self.battery_temp, self.house_load], dtype=np.float32)
-        return obs, {}
-
-    def step(self, action):
-        self.step_count += 1
-        delta_i = float(action[0])
-
-        prev_current = self.charge_current
-        self.charge_current = float(np.clip(self.charge_current + delta_i, 0.0, 50.0))
-
-        if self.step_count % 30 == 0:
-            self.house_load = float(np.random.choice([0.5, 1.5, 3.0]))
-
-        # ديناميكا المولد
-        charging_power_kw = (self.charge_current * 50.0) / 1000.0
-        total_load_kw = self.house_load + charging_power_kw
-        generator_capacity_kw = 4.0
-
-        power_imbalance = total_load_kw - generator_capacity_kw * 0.75
-        target_freq = 50.0 - (power_imbalance * 1.8)
-
-        governor_response = 0.35
-        new_freq = self.freq + governor_response * (target_freq - self.freq)
-        self.df_dt = (new_freq - self.freq) / self.dt
-        self.freq = float(new_freq)
-
-        # ديناميكا البطارية
-        i_jump_stress = abs(self.charge_current - prev_current) / self.dt
-        joule_heat = (self.charge_current ** 2) * 0.002
-        temp_rise = (joule_heat + (i_jump_stress * 0.01)) * self.dt
-        cooling = (self.battery_temp - 25.0) * 0.02 * self.dt
-        self.battery_temp += (temp_rise - cooling)
-
-        # دالة المكافأة
-        freq_penalty = -5.0 * ((self.freq - 50.0) ** 2)
-        battery_stress_penalty = -0.5 * (i_jump_stress ** 2)
-        temp_penalty = -2.0 * max(0.0, self.battery_temp - 45.0)
-
-        reward = freq_penalty + battery_stress_penalty + temp_penalty
-
-        terminated = False
-        if self.freq < 45.0 or self.freq > 55.0 or self.battery_temp > 60.0:
-            reward -= 200.0
-            terminated = True
-
-        truncated = self.step_count >= 200
-        obs = np.array([self.freq, self.df_dt, self.charge_current, self.battery_temp, self.house_load], dtype=np.float32)
-
-        return obs, reward, terminated, truncated, {}
+from voltagent import MODEL_SCHEMA_VERSION, __version__
+from voltagent.simulation_env import GeneratorInverterEnv, SimulationConfig
 
 
-# ==============================================================================
-# 2. وحدة تسجيل التجارب الحقيقية (Real-World Experience Logger)
-# ==============================================================================
-DATA_FILE = "generator_real_data.csv"
-
-def log_real_experience(obs, action, reward, next_obs, done):
-    """تسجيل تجارب التشغيل اليومية لتدريب النموذج عليها لاحقاً"""
-    file_exists = os.path.isfile(DATA_FILE)
-    with open(DATA_FILE, mode="a", newline="") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["f", "df_dt", "i_bat", "temp", "p_load", "action", "reward", "next_f", "done"])
-        writer.writerow([obs[0], obs[1], obs[2], obs[3], obs[4], float(action[0]), reward, next_obs[0], done])
+def model_base_path(path_text: str) -> Path:
+    path = Path(path_text)
+    if path.suffix == ".zip":
+        path = path.with_suffix("")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
-# ==============================================================================
-# 3. بيئة التعلم المستمر من البيانات الواقعية (Data-Driven Env for Continual Learning)
-# ==============================================================================
-class ContinualLearningEnv(gym.Env):
-    """بيئة تعيد تشغيل الأحداث الواقعية المسجلة وتكيف استجابة الـ Agent"""
-    def __init__(self, data_path=DATA_FILE):
-        super().__init__()
-        self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(1,), dtype=np.float32)
-        self.observation_space = spaces.Box(
-            low=np.array([40.0, -10.0, 0.0, 20.0, 0.0], dtype=np.float32),
-            high=np.array([60.0, 10.0, 60.0, 70.0, 5.0], dtype=np.float32),
-            dtype=np.float32
-        )
-        
-        # قراءة البيانات المخزنة
-        self.data = []
-        if os.path.exists(data_path):
-            with open(data_path, mode="r") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    self.data.append(row)
-        self.current_idx = 0
+def evaluate_model(model: PPO, config: SimulationConfig, episodes: int, seed: int) -> dict:
+    """Evaluate deterministically and report descriptive simulation metrics."""
+    records = []
+    env = GeneratorInverterEnv(config=config)
+    try:
+        for episode in range(episodes):
+            obs, _ = env.reset(seed=seed + episode)
+            rewards = []
+            frequencies = []
+            temperatures = []
+            currents = []
+            guards = 0
+            terminated = False
+            truncated = False
+            while not (terminated or truncated):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = env.step(action)
+                rewards.append(float(reward))
+                frequencies.append(float(obs[0]))
+                temperatures.append(float(obs[3]))
+                currents.append(float(obs[2]))
+                guards += int(info.get("guard_active", False))
+            records.append({
+                "episode": episode + 1,
+                "steps": len(rewards),
+                "total_reward": float(np.sum(rewards)),
+                "mean_absolute_frequency_error_hz": float(np.mean(np.abs(np.asarray(frequencies) - config.nominal_frequency_hz))),
+                "max_absolute_frequency_error_hz": float(np.max(np.abs(np.asarray(frequencies) - config.nominal_frequency_hz))),
+                "max_battery_temperature_c": float(np.max(temperatures)),
+                "final_charge_current_a": float(currents[-1]),
+                "guard_activation_fraction": float(guards / max(1, len(rewards))),
+                "terminated_by_simulated_trip": bool(terminated),
+                "truncated_by_episode_length": bool(truncated),
+            })
+    finally:
+        env.close()
 
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        self.current_idx = 0
-        if not self.data:
-            return np.array([50.0, 0.0, 5.0, 25.0, 0.5], dtype=np.float32), {}
-        
-        row = self.data[self.current_idx]
-        obs = np.array([float(row["f"]), float(row["df_dt"]), float(row["i_bat"]), float(row["temp"]), float(row["p_load"])], dtype=np.float32)
-        return obs, {}
-
-    def step(self, action):
-        row = self.data[self.current_idx]
-        self.current_idx += 1
-        
-        obs = np.array([float(row["f"]), float(row["df_dt"]), float(row["i_bat"]), float(row["temp"]), float(row["p_load"])], dtype=np.float32)
-        reward = float(row["reward"])
-        terminated = row["done"] == "True" or self.current_idx >= len(self.data) - 1
-        truncated = False
-        
-        return obs, reward, terminated, truncated, {}
+    if not records:
+        return {"episodes": 0, "results": []}
+    return {
+        "simulation_only": True,
+        "episodes": episodes,
+        "mean_total_reward": float(np.mean([r["total_reward"] for r in records])),
+        "mean_absolute_frequency_error_hz": float(np.mean([r["mean_absolute_frequency_error_hz"] for r in records])),
+        "worst_max_absolute_frequency_error_hz": float(np.max([r["max_absolute_frequency_error_hz"] for r in records])),
+        "max_battery_temperature_c": float(np.max([r["max_battery_temperature_c"] for r in records])),
+        "simulated_trip_count": int(sum(r["terminated_by_simulated_trip"] for r in records)),
+        "results": records,
+        "note": "Descriptive results from this simplified synthetic model; not evidence of real-world safety or performance.",
+    }
 
 
-# ==============================================================================
-# 4. نقطة الانطلاق والتدريب
-# ==============================================================================
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train VoltAgent PPO against a research-only simulator.")
+    parser.add_argument("--timesteps", type=int, default=50_000, help="Training timesteps (default: 50000).")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
+    parser.add_argument("--model-path", default="inverter_agent_ppo", help="Output model path, with or without .zip.")
+    parser.add_argument("--eval-episodes", type=int, default=8, help="Number of deterministic simulation evaluation episodes.")
+    parser.add_argument("--device", default="auto", help="Stable-Baselines3 device, e.g. auto, cpu, cuda.")
+    args = parser.parse_args()
+
+    if args.timesteps < 1 or args.eval_episodes < 1:
+        parser.error("--timesteps and --eval-episodes must be >= 1")
+
+    base_path = model_base_path(args.model_path)
+    config = SimulationConfig()
+    env = GeneratorInverterEnv(config=config)
+
+    # Fail early if the environment violates Gymnasium expectations.
+    check_env(env, warn=True)
+    print("[RESEARCH MODE] Training with synthetic simulation only.")
+    print("[WARNING] Default electrical and thermal parameters are placeholders, not hardware specifications.")
+    print(f"[INFO] Training for {args.timesteps:,} timesteps; random seed={args.seed}.")
+
+    model = PPO(
+        "MlpPolicy",
+        env,
+        learning_rate=3e-4,
+        n_steps=1024,
+        batch_size=64,
+        gamma=0.99,
+        gae_lambda=0.95,
+        ent_coef=0.005,
+        verbose=1,
+        seed=args.seed,
+        device=args.device,
+    )
+    model.learn(total_timesteps=args.timesteps, progress_bar=False)
+    model.save(str(base_path))
+
+    metadata = {
+        "project": "VoltAgent",
+        "project_version": __version__,
+        "model_schema_version": MODEL_SCHEMA_VERSION,
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        "training_source": "synthetic_simulation_only",
+        "hardware_validated": False,
+        "observation_fields": [
+            "frequency_hz", "df_dt_hz_s", "charge_current_a", "battery_temp_c",
+            "house_load_kw", "target_charge_current_a", "mechanical_power_kw",
+        ],
+        "action": "normalized scalar [-1, 1], mapped to a request of +/- action_request_limit_a amperes per step; simulator rate-limits the applied change",
+        "timesteps_requested": args.timesteps,
+        "timesteps_completed": int(model.num_timesteps),
+        "seed": args.seed,
+        "config": {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in config.__dict__.items()
+        },
+        "warnings": [
+            "Research-only simplified simulator; not a validated digital twin.",
+            "This model must not be used to control physical electrical equipment.",
+            "Re-train and re-validate if the observation/action schema changes.",
+        ],
+    }
+    metadata_path = Path(str(base_path) + ".metadata.json")
+    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    report = evaluate_model(model, config, args.eval_episodes, args.seed + 10_000)
+    report_path = Path("reports") / f"simulation_evaluation_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print(f"[OK] New research model saved: {base_path}.zip")
+    print(f"[OK] Metadata saved: {metadata_path}")
+    print(f"[OK] Simulation evaluation saved: {report_path}")
+    print(f"[SUMMARY] Mean absolute frequency error: {report.get('mean_absolute_frequency_error_hz', float('nan')):.3f} Hz")
+    print(f"[SUMMARY] Simulated trip episodes: {report.get('simulated_trip_count', 'n/a')}/{args.eval_episodes}")
+    print("[LIMITATION] These metrics describe this simulator only; they do not demonstrate hardware safety.")
+    env.close()
+
+
 if __name__ == "__main__":
-    MODEL_PATH = "inverter_agent_ppo"
-
-    # التحقق: إذا كان هناك نموذج سابق ومسجل بيانات حقيقية كافية -> تحديث النموذج (Fine-Tuning)
-    if os.path.exists(f"{MODEL_PATH}.zip") and os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE) > 5000:
-        print("[+] تم العثور على نموذج وسجلات واقعية سابقة: جاري التكيف التلقائي (Continual Learning)...")
-        model = PPO.load(MODEL_PATH)
-        real_env = ContinualLearningEnv(DATA_FILE)
-        model.set_env(real_env)
-        model.learn(total_timesteps=10000)
-        model.save(MODEL_PATH)
-        print("[✓] تم تحديث النموذج بنجاح بالبيانات الواقعية.")
-    else:
-        # التدريب الأولي للمحاكاة
-        print("[+] بدء التدريب الأولي الأساسي للـ Agent...")
-        env = GeneratorInverterEnv()
-        model = PPO("MlpPolicy", env, verbose=1, learning_rate=0.0003)
-        model.learn(total_timesteps=50000)
-        model.save(MODEL_PATH)
-        print("[✓] تم حفظ النموذج الأولي بنجاح باسم: inverter_agent_ppo.zip")
+    main()
