@@ -115,7 +115,7 @@ def simulate_battery_current_profile(
 
         resistive_heat_j += heating_w * config.dt_s
 
-        # Difference between requested and applied current.
+        # Difference between requested and applied battery power.
         current_tracking_error_a = abs(requested - current)
         peak_current_tracking_error_a = max(
             peak_current_tracking_error_a,
