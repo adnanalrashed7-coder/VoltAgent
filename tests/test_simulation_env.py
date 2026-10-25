@@ -31,18 +31,18 @@ def test_step_is_finite_and_limits_applied_current_delta():
     env.close()
 
 
-def test_research_guard_forces_current_reduction_when_frequency_is_low():
+def test_research_guard_sheds_battery_charging_when_frequency_is_low():
     env = GeneratorInverterEnv()
     obs, _ = env.reset(seed=1, options={
         "frequency_hz": 48.8,
-        "charge_current_a": 10.0,
-        "target_charge_current_a": 20.0,
+        "battery_current_a": -1.0,
+        "battery_soc": 0.6,
         "battery_temp_c": 25.0,
         "house_load_kw": 0.5,
     })
-    _, _, _, _, info = env.step(np.array([5.0], dtype=np.float32))
+    _, _, _, _, info = env.step(np.array([-1.0], dtype=np.float32))
     assert info["guard_active"] is True
-    assert info["action_applied_delta_a"] < 0.0
+    assert info["action_applied_delta_a"] > 0.0
     env.close()
 
 
@@ -50,8 +50,8 @@ def test_episode_truncates_at_configured_length():
     env = GeneratorInverterEnv(config=SimulationConfig(episode_steps=1))
     env.reset(seed=3, options={
         "frequency_hz": 50.0,
-        "charge_current_a": 5.0,
-        "target_charge_current_a": 5.0,
+        "battery_current_a": 0.0,
+        "battery_soc": 0.6,
         "battery_temp_c": 25.0,
         "house_load_kw": 0.5,
     })
@@ -91,8 +91,8 @@ def test_emergency_charge_shed_is_exposed_at_top_level_info():
     try:
         env.reset(seed=7, options={
             "frequency_hz": 50.0,
-            "charge_current_a": 5.0,
-            "target_charge_current_a": 5.0,
+            "battery_current_a": 0.0,
+            "battery_soc": 0.6,
             "battery_temp_c": 25.0,
             "house_load_kw": 0.5,
         })
@@ -112,7 +112,7 @@ def test_emergency_overload_guard_sheds_charging_load():
         generator_rated_power_kw=4.0,
         dc_charge_voltage_v=50.0,
         inverter_efficiency=0.9,
-        guard_loads_a_downward_step=True,
+        guard_sheds_charging=True,
     )
     env = GeneratorInverterEnv(config=config)
 
@@ -121,8 +121,8 @@ def test_emergency_overload_guard_sheds_charging_load():
             seed=11,
             options={
                 "frequency_hz": 50.0,
-                "charge_current_a": 20.0,
-                "target_charge_current_a": 20.0,
+                "battery_current_a": -20.0,
+                "battery_soc": 0.6,
                 "battery_temp_c": 25.0,
                 "house_load_kw": 3.5,
             },
@@ -133,7 +133,7 @@ def test_emergency_overload_guard_sheds_charging_load():
         )
 
         assert info["emergency_charge_shed"] is True
-        assert env.charge_current_a == 0.0
+        assert env.battery_current_a == 0.0
         assert info["guard_active"] is True
 
     finally:
@@ -156,16 +156,16 @@ def test_battery_heating_scales_with_squared_current():
                 seed=17,
                 options={
                     "frequency_hz": 50.0,
-                    "charge_current_a": current_a,
-                    "target_charge_current_a": current_a,
+                    "battery_current_a": current_a,
+                    "battery_soc": 0.6,
                     "battery_temp_c": 25.0,
-                    "house_load_kw": 0.5,
+                    "house_load_kw": 3.5,
                 },
             )
 
             env.step(np.array([0.0], dtype=np.float32))
 
-            assert env.charge_current_a == current_a
+            assert env.battery_current_a == current_a
             return env.battery_temp_c - 25.0
 
         finally:
@@ -177,3 +177,77 @@ def test_battery_heating_scales_with_squared_current():
     assert np.isclose(rise_at_20a, 0.0008, atol=1e-9)
     assert np.isclose(rise_at_40a, 0.0032, atol=1e-9)
     assert np.isclose(rise_at_40a / rise_at_20a, 4.0)
+
+
+def test_battery_support_reduces_generator_load_and_updates_soc():
+    config = SimulationConfig(action_request_limit_a=0.5, max_delta_current_a_per_step=0.5)
+
+    def run_step(action):
+        env = GeneratorInverterEnv(config=config)
+        try:
+            env.reset(seed=31, options={
+                "frequency_hz": 50.0,
+                "battery_current_a": 0.0,
+                "battery_soc": 0.6,
+                "battery_temp_c": 25.0,
+                "house_load_kw": 1.0,
+            })
+            return env.step(np.array([action], dtype=np.float32)), env
+        except Exception:
+            env.close()
+            raise
+
+    (support_result, support_env) = run_step(1.0)
+    (charge_result, charge_env) = run_step(-1.0)
+    try:
+        support_info = support_result[4]
+        charge_info = charge_result[4]
+        assert support_info["battery_current_a"] > 0.0
+        assert support_info["total_load_kw"] < 1.0
+        assert support_info["battery_soc"] < 0.6
+        assert charge_info["battery_current_a"] < 0.0
+        assert charge_info["total_load_kw"] > 1.0
+        assert charge_info["battery_soc"] > 0.6
+    finally:
+        support_env.close()
+        charge_env.close()
+
+
+def test_soc_bounds_block_battery_dispatch_beyond_reserve():
+    config = SimulationConfig()
+    for soc, action in (
+        (config.battery_soc_min, 1.0),
+        (config.battery_soc_max, -1.0),
+    ):
+        env = GeneratorInverterEnv(config=config)
+        try:
+            env.reset(seed=32, options={
+                "frequency_hz": 50.0,
+                "battery_current_a": 0.0,
+                "battery_soc": soc,
+                "battery_temp_c": 25.0,
+                "house_load_kw": 3.5,
+            })
+            env.step(np.array([action], dtype=np.float32))
+            assert env.battery_current_a == 0.0
+        finally:
+            env.close()
+
+
+def test_high_temperature_derates_battery_discharge_current():
+    env = GeneratorInverterEnv()
+    try:
+        env.reset(seed=33, options={
+            "frequency_hz": 50.0,
+            "battery_current_a": 10.0,
+            "battery_soc": 0.6,
+            "battery_temp_c": 59.0,
+            "house_load_kw": 3.5,
+        })
+
+        env.step(np.array([0.0], dtype=np.float32))
+
+        assert 0.0 < env.battery_current_a < 10.0
+        assert env.battery_current_a <= 50.0 / 15.0
+    finally:
+        env.close()

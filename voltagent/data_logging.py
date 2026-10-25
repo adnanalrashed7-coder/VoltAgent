@@ -12,11 +12,11 @@ from . import MODEL_SCHEMA_VERSION
 
 FIELDS = [
     "timestamp_utc", "run_id", "step", "source_type", "model_schema_version",
-    "frequency_hz", "df_dt_hz_s", "charge_current_a", "battery_temp_c",
-    "house_load_kw", "target_charge_current_a", "mechanical_power_kw",
+    "frequency_hz", "df_dt_hz_s", "battery_current_a", "battery_temp_c",
+    "house_load_kw", "battery_soc", "mechanical_power_kw",
     "action_requested_a", "action_applied_delta_a", "next_frequency_hz",
-    "next_df_dt_hz_s", "next_charge_current_a", "next_battery_temp_c",
-    "next_house_load_kw", "next_target_charge_current_a", "next_mechanical_power_kw",
+    "next_df_dt_hz_s", "next_battery_current_a", "next_battery_temp_c",
+    "next_house_load_kw", "next_battery_soc", "next_mechanical_power_kw",
     "reward", "terminated", "truncated", "guard_active", "total_load_kw", "overload_kw",
 ]
 

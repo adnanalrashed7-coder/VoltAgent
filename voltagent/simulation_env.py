@@ -29,6 +29,16 @@ class SimulationConfig:
     dc_charge_voltage_v: float = 50.0
     inverter_efficiency: float = 0.90
     max_charge_current_a: float = 50.0
+    max_discharge_current_a: float = 50.0
+    battery_capacity_ah: float = 100.0
+    battery_charge_efficiency: float = 0.95
+    battery_discharge_efficiency: float = 0.95
+    battery_soc_min: float = 0.20
+    battery_soc_max: float = 0.90
+    battery_soc_reserve: float = 0.10
+    battery_current_penalty: float = 0.005
+    initial_soc_low: float = 0.45
+    initial_soc_high: float = 0.85
 
     # Simple frequency/governor dynamics. Must be calibrated for a real set.
     inertia_constant_s: float = 2.5
@@ -41,6 +51,7 @@ class SimulationConfig:
     battery_thermal_capacity_j_per_c: float = 2000.0
     battery_cooling_w_per_c: float = 4.0
     ambient_temp_c: float = 25.0
+    battery_derate_start_temp_c: float = 45.0
 
     # Broad research episode stop conditions; NOT safety limits for hardware.
     stop_frequency_low_hz: float = 45.0
@@ -52,18 +63,14 @@ class SimulationConfig:
     max_delta_current_a_per_step: float = 0.5
     guard_frequency_hz: float = 49.0
     guard_df_dt_hz_s: float = -1.25
-    guard_loads_a_downward_step: bool = True
+    guard_sheds_charging: bool = True
 
     # Synthetic household-load scenarios, in kW.
     load_choices_kw: tuple[float, ...] = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5)
     load_change_min_steps: int = 10
     load_change_max_steps: int = 25
 
-    # Randomized initial condition and charge target for training diversity.
-    initial_current_low_a: float = 2.0
-    initial_current_high_a: float = 10.0
-    target_current_low_a: float = 15.0
-    target_current_high_a: float = 35.0
+    # Randomized initial conditions for training diversity.
     initial_temp_low_c: float = 20.0
     initial_temp_high_c: float = 35.0
     initial_load_low_kw: float = 0.25
@@ -78,6 +85,18 @@ class SimulationConfig:
             raise ValueError("inverter_efficiency must be in (0, 1]")
         if self.max_charge_current_a <= 0:
             raise ValueError("max_charge_current_a must be positive")
+        if self.max_discharge_current_a <= 0 or self.battery_capacity_ah <= 0:
+            raise ValueError("discharge current and battery capacity must be positive")
+        if not 0 < self.battery_charge_efficiency <= 1 or not 0 < self.battery_discharge_efficiency <= 1:
+            raise ValueError("battery efficiencies must be in (0, 1]")
+        if not 0 <= self.battery_soc_min < self.battery_soc_max <= 1:
+            raise ValueError("battery SOC bounds must satisfy 0 <= min < max <= 1")
+        if not 0 < self.battery_soc_reserve < (self.battery_soc_max - self.battery_soc_min):
+            raise ValueError("battery_soc_reserve must fit inside the SOC range")
+        if self.battery_current_penalty < 0:
+            raise ValueError("battery_current_penalty cannot be negative")
+        if not self.battery_soc_min <= self.initial_soc_low <= self.initial_soc_high <= self.battery_soc_max:
+            raise ValueError("initial SOC range must fit inside the battery SOC bounds")
         if self.action_request_limit_a <= 0 or self.max_delta_current_a_per_step <= 0:
             raise ValueError("action and slew limits must be positive")
         if not self.stop_frequency_low_hz < self.nominal_frequency_hz < self.stop_frequency_high_hz:
@@ -88,6 +107,8 @@ class SimulationConfig:
             raise ValueError("droop_hz_at_rated_power must be positive")
         if self.battery_thermal_capacity_j_per_c <= 0:
             raise ValueError("battery thermal capacity must be positive")
+        if self.battery_derate_start_temp_c >= self.stop_battery_temp_c:
+            raise ValueError("battery derate temperature must be below the episode stop temperature")
         if not self.load_choices_kw or any(x < 0 for x in self.load_choices_kw):
             raise ValueError("load_choices_kw must contain non-negative values")
         if self.load_change_min_steps < 1 or self.load_change_max_steps < self.load_change_min_steps:
@@ -97,14 +118,14 @@ class SimulationConfig:
 class GeneratorInverterEnv(gym.Env):
     """A synthetic Gymnasium environment; not a hardware controller.
 
-    Observation order:
-      [frequency_hz, df_dt_hz_s, charge_current_a, battery_temp_c,
-       house_load_kw, target_charge_current_a, mechanical_power_kw]
+        Observation order:
+            [frequency_hz, df_dt_hz_s, battery_current_a, battery_temp_c,
+             house_load_kw, battery_soc, mechanical_power_kw]
 
     Action:
-      One normalized scalar in [-1, 1], mapped to a small requested current
-      change in amperes per simulation step. The simulator applies a rate limit
-      and a simple research-only guard.
+            One normalized scalar in [-1, 1], mapped to a signed battery-current
+            change. Positive current discharges to support the load; negative current
+            charges the battery and absorbs generator surplus.
     """
 
     metadata = {"render_modes": ["human"]}
@@ -129,9 +150,10 @@ class GeneratorInverterEnv(gym.Env):
         )
         max_house_load_kw = max(5.0, max(self.config.load_choices_kw), self.config.initial_load_high_kw)
         self.observation_space = spaces.Box(
-            low=np.array([30.0, -25.0, 0.0, -10.0, 0.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([70.0, 25.0, self.config.max_charge_current_a, 90.0, max_house_load_kw,
-                           self.config.max_charge_current_a,
+            low=np.array([30.0, -25.0, -self.config.max_charge_current_a, -10.0, 0.0,
+                          self.config.battery_soc_min, 0.0], dtype=np.float32),
+            high=np.array([70.0, 25.0, self.config.max_discharge_current_a, 90.0, max_house_load_kw,
+                           self.config.battery_soc_max,
                            self.config.generator_rated_power_kw], dtype=np.float32),
             dtype=np.float32,
         )
@@ -139,10 +161,10 @@ class GeneratorInverterEnv(gym.Env):
         self.step_count = 0
         self.freq_hz = self.config.nominal_frequency_hz
         self.df_dt_hz_s = 0.0
-        self.charge_current_a = 5.0
+        self.battery_current_a = 0.0
         self.battery_temp_c = self.config.ambient_temp_c
         self.house_load_kw = 0.5
-        self.target_charge_current_a = 20.0
+        self.battery_soc = 0.65
         self.mechanical_power_kw = 0.5
         self.mechanical_power_setpoint_kw = 0.5
         self.next_load_change_step = self.config.load_change_max_steps
@@ -153,15 +175,18 @@ class GeneratorInverterEnv(gym.Env):
         self.last_action_applied_a = 0.0
 
     def _electrical_load_kw(self) -> float:
-        dc_charge_kw = self.config.dc_charge_voltage_v * self.charge_current_a / 1000.0
-        ac_charge_kw = dc_charge_kw / self.config.inverter_efficiency
-        return float(self.house_load_kw + ac_charge_kw)
+        dc_power_kw = self.config.dc_charge_voltage_v * self.battery_current_a / 1000.0
+        if dc_power_kw >= 0:
+            battery_ac_power_kw = dc_power_kw * self.config.inverter_efficiency
+        else:
+            battery_ac_power_kw = dc_power_kw / self.config.inverter_efficiency
+        return float(max(0.0, self.house_load_kw - battery_ac_power_kw))
 
     def _observation(self) -> np.ndarray:
         return np.asarray(
-            [self.freq_hz, self.df_dt_hz_s, self.charge_current_a,
+            [self.freq_hz, self.df_dt_hz_s, self.battery_current_a,
              self.battery_temp_c, self.house_load_kw,
-             self.target_charge_current_a, self.mechanical_power_kw],
+             self.battery_soc, self.mechanical_power_kw],
             dtype=np.float32,
         )
 
@@ -173,16 +198,19 @@ class GeneratorInverterEnv(gym.Env):
         self.freq_hz = float(opts["frequency_hz"] if "frequency_hz" in opts else
                              cfg.nominal_frequency_hz + self.np_random.uniform(-0.1, 0.1))
         self.df_dt_hz_s = 0.0
-        self.charge_current_a = float(opts["charge_current_a"] if "charge_current_a" in opts else
-                                      self.np_random.uniform(cfg.initial_current_low_a, cfg.initial_current_high_a))
+        self.battery_current_a = float(opts.get("battery_current_a", 0.0))
         self.battery_temp_c = float(opts["battery_temp_c"] if "battery_temp_c" in opts else
                                     self.np_random.uniform(cfg.initial_temp_low_c, cfg.initial_temp_high_c))
         self.house_load_kw = float(opts["house_load_kw"] if "house_load_kw" in opts else
                                    self.np_random.uniform(cfg.initial_load_low_kw, cfg.initial_load_high_kw))
-        self.target_charge_current_a = float(opts["target_charge_current_a"] if "target_charge_current_a" in opts else
-                                              self.np_random.uniform(cfg.target_current_low_a, cfg.target_current_high_a))
-        self.charge_current_a = float(np.clip(self.charge_current_a, 0.0, cfg.max_charge_current_a))
-        self.target_charge_current_a = float(np.clip(self.target_charge_current_a, 0.0, cfg.max_charge_current_a))
+        self.battery_soc = float(opts.get(
+            "battery_soc",
+            self.np_random.uniform(cfg.initial_soc_low, cfg.initial_soc_high),
+        ))
+        self.battery_current_a = float(np.clip(
+            self.battery_current_a, -cfg.max_charge_current_a, cfg.max_discharge_current_a
+        ))
+        self.battery_soc = float(np.clip(self.battery_soc, cfg.battery_soc_min, cfg.battery_soc_max))
         self.battery_temp_c = max(-10.0, self.battery_temp_c)
         self.house_load_kw = max(0.0, self.house_load_kw)
 
@@ -212,16 +240,38 @@ class GeneratorInverterEnv(gym.Env):
         delta = float(np.clip(requested, -cfg.max_delta_current_a_per_step,
                               cfg.max_delta_current_a_per_step))
 
-        # Research-only supervisory guard. This is not a certified safety function.
         guard_active = (self.freq_hz < cfg.guard_frequency_hz or
                         self.df_dt_hz_s < cfg.guard_df_dt_hz_s)
-        if guard_active and cfg.guard_loads_a_downward_step:
-            delta = min(delta, -cfg.max_delta_current_a_per_step)
+        if guard_active and cfg.guard_sheds_charging and self.battery_current_a < 0:
+            delta = max(delta, min(cfg.max_delta_current_a_per_step, -self.battery_current_a))
 
-        previous_current = self.charge_current_a
-        self.charge_current_a = float(np.clip(
-            self.charge_current_a + delta, 0.0, cfg.max_charge_current_a))
-        applied_delta = self.charge_current_a - previous_current
+        previous_current = self.battery_current_a
+        self.battery_current_a += delta
+
+        discharge_derate = min(
+            1.0,
+            max(0.0, (self.battery_soc - cfg.battery_soc_min) / cfg.battery_soc_reserve),
+        )
+        charge_derate = min(
+            1.0,
+            max(0.0, (cfg.battery_soc_max - self.battery_soc) / cfg.battery_soc_reserve),
+        )
+        temperature_derate = min(
+            1.0,
+            max(0.0, (cfg.stop_battery_temp_c - self.battery_temp_c)
+                / (cfg.stop_battery_temp_c - cfg.battery_derate_start_temp_c)),
+        )
+        discharge_limit = cfg.max_discharge_current_a * discharge_derate * temperature_derate
+        charge_limit = cfg.max_charge_current_a * charge_derate * temperature_derate
+        discharge_limit = min(
+            discharge_limit,
+            self.house_load_kw * 1000.0
+            / (cfg.dc_charge_voltage_v * cfg.inverter_efficiency),
+        )
+        self.battery_current_a = float(np.clip(
+            self.battery_current_a, -charge_limit, discharge_limit
+        ))
+        applied_delta = self.battery_current_a - previous_current
 
         if self.step_count >= self.next_load_change_step:
             choices = np.asarray(cfg.load_choices_kw, dtype=np.float64)
@@ -231,23 +281,15 @@ class GeneratorInverterEnv(gym.Env):
 
         total_load_kw = self._electrical_load_kw()
         overload_kw = max(0.0, total_load_kw - cfg.generator_rated_power_kw)
-                # Research-only overload override:
-        # shed simulated charging load when total demand exceeds rating.
         emergency_charge_shed = False
-
-        if cfg.guard_loads_a_downward_step and overload_kw > 1e-9:
-            self.charge_current_a = 0.0
-            applied_delta = self.charge_current_a - previous_current
-
+        if cfg.guard_sheds_charging and overload_kw > 1e-9 and self.battery_current_a < 0:
+            self.battery_current_a = 0.0
+            applied_delta = self.battery_current_a - previous_current
             total_load_kw = self._electrical_load_kw()
-            overload_kw = max(
-                0.0,
-                total_load_kw - cfg.generator_rated_power_kw,
-            )
-
+            overload_kw = max(0.0, total_load_kw - cfg.generator_rated_power_kw)
             guard_active = True
             emergency_charge_shed = True
-        # First-order governor response with a simple droop law.
+
         governor_gain_kw_per_hz = cfg.generator_rated_power_kw / cfg.droop_hz_at_rated_power
         governor_target_kw = self.mechanical_power_setpoint_kw + governor_gain_kw_per_hz * (
             cfg.nominal_frequency_hz - self.freq_hz)
@@ -256,7 +298,6 @@ class GeneratorInverterEnv(gym.Env):
         self.mechanical_power_kw += governor_alpha * (governor_target_kw - self.mechanical_power_kw)
         self.mechanical_power_kw = float(np.clip(self.mechanical_power_kw, 0.0, cfg.generator_rated_power_kw))
 
-        # Simplified swing-equation-like frequency dynamics in per-unit power.
         power_imbalance_pu = (self.mechanical_power_kw - total_load_kw) / cfg.generator_rated_power_kw
         speed_deviation_pu = (self.freq_hz - cfg.nominal_frequency_hz) / cfg.nominal_frequency_hz
         damping_pu = cfg.damping_pu_per_pu * speed_deviation_pu
@@ -265,21 +306,32 @@ class GeneratorInverterEnv(gym.Env):
         self.freq_hz = float(self.freq_hz + df_dt * cfg.dt_s)
         self.df_dt_hz_s = float((self.freq_hz - old_freq) / cfg.dt_s)
 
-        # One-node thermal approximation: I^2 R heating minus ambient cooling.
-        joule_heat_w = self.charge_current_a ** 2 * cfg.battery_internal_resistance_ohm
+        current_abs = abs(self.battery_current_a)
+        joule_heat_w = current_abs ** 2 * cfg.battery_internal_resistance_ohm
         cooling_w = cfg.battery_cooling_w_per_c * (self.battery_temp_c - cfg.ambient_temp_c)
         dtemp_dt = (joule_heat_w - cooling_w) / cfg.battery_thermal_capacity_j_per_c
         self.battery_temp_c = float(self.battery_temp_c + dtemp_dt * cfg.dt_s)
 
+        if self.battery_current_a >= 0:
+            soc_delta = -self.battery_current_a * cfg.dt_s / (
+                cfg.battery_capacity_ah * 3600.0 * cfg.battery_discharge_efficiency
+            )
+        else:
+            soc_delta = -self.battery_current_a * cfg.dt_s * cfg.battery_charge_efficiency / (
+                cfg.battery_capacity_ah * 3600.0
+            )
+        self.battery_soc = float(np.clip(
+            self.battery_soc + soc_delta, cfg.battery_soc_min, cfg.battery_soc_max
+        ))
+
         freq_error = self.freq_hz - cfg.nominal_frequency_hz
-        current_error = self.charge_current_a - self.target_charge_current_a
         slew_penalty = 0.02 * (applied_delta / cfg.dt_s) ** 2
         frequency_penalty = 3.0 * freq_error ** 2
-        target_penalty = 0.025 * current_error ** 2
+        battery_current_penalty = cfg.battery_current_penalty * self.battery_current_a ** 2
         overload_penalty = 5.0 * overload_kw ** 2
-        # 40 C is a simulation penalty threshold, not a universal battery limit.
         thermal_penalty = 0.2 * max(0.0, self.battery_temp_c - 40.0) ** 2
-        reward = -(frequency_penalty + target_penalty + slew_penalty + overload_penalty + thermal_penalty)
+        reward = -(frequency_penalty + battery_current_penalty + slew_penalty
+                   + overload_penalty + thermal_penalty)
 
         terminated = bool(
             self.freq_hz < cfg.stop_frequency_low_hz
@@ -304,11 +356,14 @@ class GeneratorInverterEnv(gym.Env):
             "guard_active": guard_active,
             "total_load_kw": total_load_kw,
             "overload_kw": overload_kw,
+            "battery_current_a": self.battery_current_a,
+            "battery_ac_power_kw": self.house_load_kw - total_load_kw,
+            "battery_soc": self.battery_soc,
             "mechanical_power_kw": self.mechanical_power_kw,
             "emergency_charge_shed": emergency_charge_shed,
             "reward_components": {
                 "frequency_penalty": frequency_penalty,
-                "target_penalty": target_penalty,
+                "battery_current_penalty": battery_current_penalty,
                 "slew_penalty": slew_penalty,
                 "overload_penalty": overload_penalty,
                 "thermal_penalty": thermal_penalty,
@@ -321,8 +376,9 @@ class GeneratorInverterEnv(gym.Env):
     def render(self) -> None:
         print(
             f"t={self.step_count:04d} f={self.freq_hz:6.2f} Hz "
-            f"I={self.charge_current_a:5.2f} A "
+            f"I_bat={self.battery_current_a:6.2f} A "
             f"T={self.battery_temp_c:5.2f} C "
+            f"SOC={self.battery_soc:5.1%} "
             f"load={self.house_load_kw:4.2f} kW "
             f"P_mech={self.mechanical_power_kw:4.2f} kW"
         )

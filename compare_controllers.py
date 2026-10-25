@@ -17,22 +17,28 @@ from voltagent.simulation_env import GeneratorInverterEnv, SimulationConfig
 
 
 def controller_action(name: str, obs: np.ndarray, model: PPO | None) -> np.ndarray:
-    freq, df_dt, current, _temp, _load, target, _mechanical_power = map(float, obs)
-    if name == "fixed_ramp":
-        # Ignores frequency; ramps towards the requested charge current.
-        if current < target - 0.25:
+    freq, df_dt, current, temp, _load, soc, _mechanical_power = map(float, obs)
+    if name == "zero_battery":
+        if current > 0.25:
+            return np.array([-1.0], dtype=np.float32)
+        if current < -0.25:
             return np.array([1.0], dtype=np.float32)
-        if current > target + 0.25:
-            return np.array([-1.0], dtype=np.float32)
         return np.array([0.0], dtype=np.float32)
-    if name == "frequency_aware":
-        # Transparent rule-based comparison policy, not a certified controller.
+    if name in ("frequency_aware", "thermal_aware"):
+        if name == "thermal_aware" and (temp > 40.0 or soc < 0.30 or soc > 0.85):
+            if current > 0.25:
+                return np.array([-1.0], dtype=np.float32)
+            if current < -0.25:
+                return np.array([1.0], dtype=np.float32)
+            return np.array([0.0], dtype=np.float32)
         if freq < 49.7 or df_dt < -0.5:
+            return np.array([1.0], dtype=np.float32)
+        if freq > 50.3 or df_dt > 0.5:
             return np.array([-1.0], dtype=np.float32)
-        if current > target + 0.25:
+        if current > 0.25:
             return np.array([-1.0], dtype=np.float32)
-        if current < target - 0.25 and freq > 49.85 and df_dt > -0.15:
-            return np.array([0.5], dtype=np.float32)
+        if current < -0.25:
+            return np.array([1.0], dtype=np.float32)
         return np.array([0.0], dtype=np.float32)
     if name == "ppo":
         if model is None:
@@ -46,12 +52,14 @@ def evaluate_controller(name: str, seeds: list[int], model: PPO | None, config: 
     all_freq_errors = []
     all_frequencies = []
     all_temps = []
-    all_current_errors = []
+    all_battery_currents = []
+    all_battery_socs = []
     all_rewards = []
     all_guard_flags = []
     all_overloads = []
     episode_trips = 0
     episode_steps = []
+    episode_final_socs = []
 
     env = GeneratorInverterEnv(config=config)
     try:
@@ -66,11 +74,13 @@ def evaluate_controller(name: str, seeds: list[int], model: PPO | None, config: 
                 all_frequencies.append(float(obs[0]))
                 all_freq_errors.append(abs(float(obs[0]) - config.nominal_frequency_hz))
                 all_temps.append(float(obs[3]))
-                all_current_errors.append(abs(float(obs[2]) - float(obs[5])))
+                all_battery_currents.append(abs(float(obs[2])))
+                all_battery_socs.append(float(obs[5]))
                 all_rewards.append(float(reward))
                 all_guard_flags.append(bool(info.get("guard_active", False)))
                 all_overloads.append(float(info.get("overload_kw", 0.0)))
             episode_steps.append(steps)
+            episode_final_socs.append(float(obs[5]))
             episode_trips += int(terminated)
     finally:
         env.close()
@@ -88,7 +98,10 @@ def evaluate_controller(name: str, seeds: list[int], model: PPO | None, config: 
         "minimum_frequency_hz": float(np.min(frequencies)) if len(frequencies) else 0.0,
         "maximum_frequency_hz": float(np.max(frequencies)) if len(frequencies) else 0.0,
         "maximum_battery_temperature_c": float(np.max(temps)) if len(temps) else 0.0,
-        "mean_absolute_charge_target_error_a": float(np.mean(all_current_errors)) if all_current_errors else 0.0,
+        "mean_absolute_battery_current_a": float(np.mean(all_battery_currents)) if all_battery_currents else 0.0,
+        "battery_throughput_ah": float(np.sum(all_battery_currents) * config.dt_s / 3600.0),
+        "minimum_battery_soc": float(np.min(all_battery_socs)) if all_battery_socs else 0.0,
+        "mean_final_battery_soc": float(np.mean(episode_final_socs)) if episode_final_socs else 0.0,
         "simulated_trip_count": episode_trips,
         "simulated_trip_rate": float(episode_trips / max(1, len(seeds))),
         "guard_activation_fraction": float(np.mean(all_guard_flags)) if all_guard_flags else 0.0,
@@ -117,9 +130,13 @@ def main() -> None:
     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
     if metadata.get("model_schema_version") != MODEL_SCHEMA_VERSION or metadata.get("hardware_validated") is not False:
         raise SystemExit("Model schema/metadata is not compatible with this research comparison.")
+    try:
+        config = SimulationConfig(**metadata["config"])
+        config.validate()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(f"Model metadata has an invalid simulator config: {exc}") from exc
     model = PPO.load(str(base))
 
-    config = SimulationConfig()
     seeds = list(range(args.seed, args.seed + args.episodes))
     report = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -130,14 +147,20 @@ def main() -> None:
         "controllers": {},
         "note": "Research comparison on a simplified synthetic simulator; not proof of hardware safety or real-world superiority.",
     }
-    for name, controller_model in (("fixed_ramp", None), ("frequency_aware", None), ("ppo", model)):
+    for name, controller_model in (
+        ("zero_battery", None),
+        ("frequency_aware", None),
+        ("thermal_aware", None),
+        ("ppo", model),
+    ):
         result = evaluate_controller(name, seeds, controller_model, config)
         report["controllers"][name] = result
         print(
             f"{name:18s} | mean |f-50|={result['mean_absolute_frequency_error_hz']:.3f} Hz "
             f"| p95={result['p95_absolute_frequency_error_hz']:.3f} Hz "
             f"| trips={result['simulated_trip_count']}/{args.episodes} "
-            f"| max T={result['maximum_battery_temperature_c']:.2f} C"
+            f"| max T={result['maximum_battery_temperature_c']:.2f} C "
+            f"| mean |Ibat|={result['mean_absolute_battery_current_a']:.2f} A"
         )
 
     output = Path(args.output)

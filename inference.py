@@ -57,7 +57,7 @@ def main() -> None:
     temps = []
     log_path = Path(args.log_path)
 
-    print("step | frequency Hz | current A | target A | temp C | house kW | guard")
+    print("step | frequency Hz | battery A | SOC % | temp C | house kW | guard")
     print("-" * 75)
     try:
         for step in range(1, args.steps + 1):
@@ -80,7 +80,7 @@ def main() -> None:
                 )
             print(
                 f"{step:4d} | {next_obs[0]:12.3f} | {next_obs[2]:9.2f} | "
-                f"{next_obs[5]:8.2f} | {next_obs[3]:6.2f} | {next_obs[4]:8.2f} | "
+                f"{next_obs[5] * 100:5.1f} | {next_obs[3]:6.2f} | {next_obs[4]:8.2f} | "
                 f"{str(info.get('guard_active', False)):>5s}"
             )
             obs = next_obs
@@ -96,7 +96,10 @@ def main() -> None:
     print(f"Simulation steps: {len(frequencies)}")
     print(f"Total reward: {total_reward:.3f}")
     if frequencies:
-        print(f"Mean absolute frequency error: {np.mean(np.abs(np.asarray(frequencies) - 50.0)):.3f} Hz")
+        print(
+            "Mean absolute frequency error: "
+            f"{np.mean(np.abs(np.asarray(frequencies) - env.config.nominal_frequency_hz)):.3f} Hz"
+        )
         print(f"Maximum simulated battery temperature: {max(temps):.2f} C")
     if not args.no_log:
         print(f"Simulation-only log: {log_path}")
