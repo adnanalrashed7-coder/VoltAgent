@@ -15,9 +15,9 @@ engineer_submission_checklist:
   items:
     - id: equipment_identity
       status: pending
-      equipment: [generator, inverter_charger, battery, battery_management_system]
+      equipment: [generator, inverter_charger, high_battery_system, battery_management_system]
       required_records:
-        - manufacturer
+        - manufacturer 
         - exact_model
         - hardware_revision_and_firmware_where_applicable
         - serial_or_asset_id

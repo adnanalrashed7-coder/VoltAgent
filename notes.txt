@@ -1,0 +1,7 @@
+الفكرة الاساسية المطلوبة :
+اولا توصيل مولد بانفيرتر نوع pcs "grid forming" بحيث يشحن البطاريات مع الحفاظ على قراءات المولد مستقرة "frequancy, RPM, voltage"
+ثانيا الانفيرتر ال pcs "grid forming" من خصائصه الحفاظ على قراءة استقرار المولد ولكن ذلك يكون على حساب عمر البطاريات حيث ان الصدمة التي كان يفترض ان يتحملها المولد يأخذها الانفيرتر من البطاريات فيقلل من عمر البطاريات .
+المطلوب تكوين وكيل يعمل على التعلم من هذه الصدمة بحيث يتعلم مواجهة الصدمة ولكن مع الحفاظ على عمر البطارايات
+نوع الانفيرتر : high voltage invdrter PCS "grid forming"
+نوع  البطاريات : high voltage battery system with its controller and it's bms and ems system
+the invdrter is normally famillier to the battery system controller.
