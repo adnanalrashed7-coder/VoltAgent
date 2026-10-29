@@ -5,7 +5,7 @@ purpose: "Collect verified generator, grid-support inverter, battery, BMS, and m
 
 status:
   phase: research_only
-  hardware_selected: true
+  hardware_selected: false
   calibration_authorized: false
   hardware_test_authorized: false
   rule: "Unknown values remain null until supported by manufacturer documentation or verified measurements. Never infer safety limits from a similar model."
